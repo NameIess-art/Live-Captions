@@ -21,7 +21,7 @@ internal sealed class CaptionStyleWindow : Window
     internal NumberBox SizeInput { get; } = new() { Header = "字号", Minimum = 12, Maximum = 96,
         SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, SmallChange = 1, LargeChange = 4 };
     internal ComboBox Edges { get; } = new() { Header = "文字效果", HorizontalAlignment = HorizontalAlignment.Stretch };
-    internal Slider OpacityInput { get; } = new() { Header = "背景透明度", Minimum = 0, Maximum = 100, StepFrequency = 1 };
+    internal Slider OpacityInput { get; } = new() { Header = "背景不透明度", Minimum = 0, Maximum = 100, StepFrequency = 1 };
     private readonly TextBox _textHex = new() { Header = "文字颜色", MaxLength = 7 };
     private readonly TextBox _backgroundHex = new() { Header = "背景颜色", MaxLength = 7 };
     private readonly ColorPicker _textPicker = new() { IsAlphaEnabled = false, IsAlphaSliderVisible = false, IsAlphaTextInputVisible = false };
@@ -32,7 +32,7 @@ internal sealed class CaptionStyleWindow : Window
 
     internal CaptionStyleWindow(CaptionAppearance value, Func<CaptionAppearance, string?> changed)
     {
-        _value = value.Normalize(); _changed = changed; Title = "";
+        _value = value.Normalize(); _changed = changed; Title = "字幕样式";
         var root = new Grid { RequestedTheme = ElementTheme.Dark, Padding = new Thickness(20), RowSpacing = 16,
             Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"] };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });

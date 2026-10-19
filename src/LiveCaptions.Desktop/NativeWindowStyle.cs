@@ -73,6 +73,7 @@ internal sealed class NativeWindowStyle
         _window = window;
         _caption = caption;
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
+        window.AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "App.ico"));
         var dark = 1;
         DwmSetWindowAttribute(_handle, 20, ref dark, 4);
         var rounded = 2;

@@ -102,6 +102,8 @@ public sealed partial class MainWindow
         ShowHistory(); await Task.Delay(150);
         Check(_historyWindow != null && _historyWindow.Content is Grid, "Independent WinUI history window");
         var history = _historyWindow!;
+        Check(history.Title == "字幕历史" && ((Grid)((Grid)history.Content).Children[0]).Children.OfType<TextBlock>().All(x => x.Text != "字幕历史"),
+            "History title appears only in the native title bar");
         Check(history.AllText().Contains("第一句字幕", StringComparison.Ordinal), "History contains captured text");
         Check(history.CopyButton.IsEnabled && history.ExportButton.IsEnabled && history.ClearButton.IsEnabled, "History actions enabled when nonempty");
         history.HistoryText.Select(0, 2);
@@ -118,8 +120,9 @@ public sealed partial class MainWindow
         Check(_styleWindow != null, "Independent WinUI style window");
         var style = _styleWindow!;
         var styleSize = style.AppWindow.Size;
-        Check(style.Title.Length == 0 && style.Sections.Items.Select(x => x.Text).SequenceEqual(new[] { "文字", "背景" }),
-            "Style window has text/background navigation without a duplicated title");
+        Check(style.Title == "字幕样式" && style.Sections.Items.Select(x => x.Text).SequenceEqual(new[] { "文字", "背景" }),
+            "Style title bar identifies the text/background settings window");
+        Check((string)style.OpacityInput.Header == "背景不透明度", "Background slider label describes opacity");
         Check(style.AppWindow.Presenter is OverlappedPresenter { IsResizable: false, IsMaximizable: false },
             "Style window has fixed dimensions");
         var textOptions = (StackPanel)style.TextPage.Content;

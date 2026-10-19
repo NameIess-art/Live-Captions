@@ -48,8 +48,6 @@ public sealed class HistoryWindow : Window
         var toolbar = new Grid();
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        toolbar.Children.Add(new TextBlock { Text = "字幕历史", Style = (Style)Application.Current.Resources["TitleTextBlockStyle"],
-            VerticalAlignment = VerticalAlignment.Center });
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(CopyButton); actions.Children.Add(ExportButton); actions.Children.Add(ClearButton);
         Grid.SetColumn(actions, 1); toolbar.Children.Add(actions); root.Children.Add(toolbar);
