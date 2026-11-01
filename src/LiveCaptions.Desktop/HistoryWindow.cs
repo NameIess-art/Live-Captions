@@ -154,7 +154,7 @@ public sealed class HistoryWindow : Window
         _dialogOpen = true;
         try
         {
-            if (await Ui.Dialog(this, "清空历史", "本机已保存的历史和当前会话历史将被删除，无法撤销。需要保留内容时请先导出。", "清空")
+            if (await Ui.Dialog(this, "清空历史", "当前历史及其临时保存记录将被删除，无法撤销。需要保留内容时请先导出；以前自动归档的文件不受影响。", "清空")
                 != ContentDialogResult.Primary) return;
             var error = await ClearConfirmedAsync();
             if (error != null) await Ui.Dialog(this, "清空失败", error);

@@ -8,6 +8,8 @@ internal static class Regression
     {
         var tests = new (string Name, Action Test)[]
         {
+            ("history archive preserves sessions, retries safely and excludes archives from the next run", HistoryStoreRegression.Verify),
+            ("custom history path persists, archives there, resets and retains old files on failure", HistoryPathRegression.Verify),
             ("all history is chronological and the current saved session appears once", () =>
             {
                 var now = DateTimeOffset.Now;
@@ -107,7 +109,7 @@ internal static class Regression
         foreach (var (name, test) in tests)
         {
             try { test(); Console.WriteLine("PASS " + name); }
-            catch (Exception ex) { failed++; Console.WriteLine("FAIL " + name + ": " + ex.Message); }
+            catch (Exception ex) { failed++; Console.WriteLine("FAIL " + name + ": " + ex); }
         }
         Console.WriteLine($"{tests.Length - failed}/{tests.Length} passed");
         return failed == 0 ? 0 : 1;

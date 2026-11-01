@@ -16,10 +16,18 @@ namespace LiveCaptions.Desktop;
 
 public sealed partial class MainWindow : Window
 {
+    private int _instanceActivations;
+    internal void ActivateExistingInstance()
+    {
+        if (_closing) return;
+        _instanceActivations++;
+        NativeWindowStyle.Restore(this);
+    }
+
     private readonly Transcript _transcript = new();
     private readonly CaptureClient _capture = new();
     private readonly HistoryStore _store;
-    private readonly List<SessionRecord> _savedSessions = [];
+    private readonly HistoryPathStore _historyPathStore;
     private readonly DispatcherQueueTimer _timer, _nativeTimer, _appearanceTimer;
     private readonly AppearanceStore _appearanceStore;
     private readonly bool _startCapture;
@@ -30,9 +38,12 @@ public sealed partial class MainWindow : Window
     private readonly Button _settings = Ui.IconButton("\uE713", "设置");
     private readonly Button _history = Ui.IconButton("\uE81C", "历史");
     private readonly Button _close = Ui.IconButton("\uE8BB", "关闭");
+    private readonly Button _dragHandle = Ui.IconButton("\uE7C2", "按住拖动窗口");
     private readonly NativeWindowStyle _windowStyle;
     private HistoryWindow? _historyWindow;
     private CaptionStyleWindow? _styleWindow;
+    private HistoryPathWindow? _historyPathWindow;
+    private Task<string?>? _historyPathTask;
     private MenuFlyout? _menu;
     private readonly HashSet<MenuFlyout> _openMenus = [];
     private CaptionAppearance _appearance;
@@ -50,6 +61,10 @@ public sealed partial class MainWindow : Window
     {
         _startCapture = startCapture;
         _store = new(historyRoot);
+        _historyPathStore = new(historyRoot == null
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "history-settings.json")
+            : Path.Combine(historyRoot, "preferences", "history-settings.json"), _store.Root);
+        _store.ArchiveRoot = _historyPathStore.Load();
         _appearanceStore = new(historyRoot == null
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "caption-style.json")
             : Path.Combine(historyRoot, "preferences", "caption-style.json"));
@@ -61,12 +76,23 @@ public sealed partial class MainWindow : Window
         layout.Children.Add(_caption);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 6, 6, 0) };
+        foreach (var button in new[] { _settings, _history, _close })
+        {
+            button.Width = button.Height = 32;
+            ((FontIcon)button.Content).FontSize = 14;
+        }
         buttons.Children.Add(_settings); buttons.Children.Add(_history); buttons.Children.Add(_close);
         Grid.SetColumn(buttons, 1); layout.Children.Add(buttons);
+        _dragHandle.Width = _dragHandle.Height = 32;
+        _dragHandle.CornerRadius = new CornerRadius(4);
+        _dragHandle.HorizontalAlignment = HorizontalAlignment.Right;
+        _dragHandle.VerticalAlignment = VerticalAlignment.Bottom;
+        _dragHandle.Margin = new Thickness(0, 0, 9, 8);
+        Grid.SetColumn(_dragHandle, 1); layout.Children.Add(_dragHandle);
         _surface.Child = layout; _root.Children.Add(_surface); Content = _root;
         SystemBackdrop = new TransparentBackdrop();
         _windowStyle = new(this, caption: true);
-        ConfigureBlankPress();
+        ConfigureHandleDrag();
         _windowStyle.SetSize(1000, 90); _windowStyle.PlaceBottom();
         _timer = DispatcherQueue.CreateTimer(); _timer.Interval = TimeSpan.FromMilliseconds(350);
         _timer.Tick += async (_, _) =>
@@ -87,12 +113,12 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing += async (_, e) => { if (!_allowClose) { e.Cancel = true; await ShutdownAsync(); } };
         Closed += (_, _) =>
         {
-            CancelBlankPress();
+            CancelHandleDrag();
             _nativeTimer.Stop(); ReleaseNativeSurfaces();
-            _historyWindow?.Close(); _styleWindow?.Close();
+            _historyWindow?.Close(); _styleWindow?.Close(); _historyPathWindow?.Close();
             Application.Current.Exit();
         };
-        ApplyAppearance(); LoadHistory();
+        ApplyAppearance(); ArchivePreviousHistory();
         _capture.Received += OnCaptureReceived;
         if (startCapture)
         {
@@ -100,9 +126,14 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private bool IsDraggable(Point point)
+    private bool IsHandlePoint(Point point)
     {
-        foreach (var button in new[] { _settings, _history, _close })
+        var p = _dragHandle.TransformToVisual(_root).TransformPoint(new Point());
+        return new Rect(p.X, p.Y, _dragHandle.ActualWidth, _dragHandle.ActualHeight).Contains(point);
+    }
+    private bool IsBlankPoint(Point point)
+    {
+        foreach (var button in new[] { _settings, _history, _close, _dragHandle })
         {
             var p = button.TransformToVisual(_root).TransformPoint(new Point());
             if (new Rect(p.X, p.Y, button.ActualWidth, button.ActualHeight).Contains(point)) return false;
@@ -111,8 +142,13 @@ public sealed partial class MainWindow : Window
     }
     private bool IsDragSource(object source)
     {
-        // A popup can share this XamlRoot and bubble pointer events here. Only
-        // bare surfaces in this window may start moving; controls own their input.
+        for (var node = source as DependencyObject; node != null; node = VisualTreeHelper.GetParent(node))
+            if (ReferenceEquals(node, _dragHandle)) return true;
+        return false;
+    }
+    private bool IsBlankSource(object source)
+    {
+        // Blank clicks may clear selection, but never start moving the window.
         for (var node = source as DependencyObject; node != null; node = VisualTreeHelper.GetParent(node))
         {
             if (node is TextBlock or RichTextBlock || node is Control && !ReferenceEquals(node, _caption.Scroll)) return false;
@@ -122,7 +158,7 @@ public sealed partial class MainWindow : Window
     }
     private void UpdateMinimumHeight()
     {
-        var minimum = _caption.LineHeight * 2 + 26;
+        var minimum = Math.Max(86, _caption.LineHeight * 2 + 26);
         _windowStyle.MinimumHeight = minimum;
         if (AppWindow.Size.Height < minimum * _windowStyle.Scale)
         {
@@ -226,20 +262,47 @@ public sealed partial class MainWindow : Window
         };
         var style = new MenuFlyoutItem { Text = "字幕样式", Icon = new FontIcon { Glyph = "\uE790" } };
         style.Click += (_, _) => ShowStyle();
+        var historyPath = new MenuFlyoutItem { Text = "历史保存路径", Icon = new FontIcon { Glyph = "\uE8B7" } };
+        historyPath.Click += (_, _) => ShowHistoryPath();
         var native = new ToggleMenuFlyoutItem { Text = "显示原生字幕", IsChecked = _showNativeCaptions };
         native.Click += (_, _) =>
         {
             _showNativeCaptions = native.IsChecked;
             if (_showNativeCaptions) ReleaseNativeSurfaces(); else MaintainNativeVisibility();
         };
-        menu.Items.Add(language); menu.Items.Add(style); menu.Items.Add(new MenuFlyoutSeparator()); menu.Items.Add(native);
+        menu.Items.Add(language); menu.Items.Add(style); menu.Items.Add(historyPath); menu.Items.Add(new MenuFlyoutSeparator()); menu.Items.Add(native);
         return ObserveMenu(menu);
+    }
+    private void ShowHistoryPath()
+    {
+        if (_historyPathWindow != null) { NativeWindowStyle.Restore(_historyPathWindow); return; }
+        _historyPathWindow = new(_store.ArchiveRoot, _historyPathStore.DefaultPath, ChangeHistoryPathAsync);
+        NativeWindowStyle.SetOwner(_historyPathWindow, this);
+        _historyPathWindow.Closed += (_, _) => _historyPathWindow = null;
+        _historyPathWindow.Activate();
+    }
+    private Task<string?> ChangeHistoryPathAsync(string path)
+    {
+        if (_closing) return Task.FromResult<string?>("应用正在关闭，请下次打开后修改。");
+        if (_historyPathTask is { IsCompleted: false }) return Task.FromResult<string?>("正在保存路径，请稍后重试。");
+        return _historyPathTask = ChangeHistoryPathCoreAsync(path);
+    }
+    private async Task<string?> ChangeHistoryPathCoreAsync(string path)
+    {
+        try
+        {
+            var saved = await Task.Run(() => _historyPathStore.Save(path));
+            _store.ArchiveRoot = saved;
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { return "保存路径未更新，请检查文件夹是否可写。\n" + ex.Message; }
     }
     private MenuFlyout ObserveMenu(MenuFlyout menu)
     {
         menu.Opening += (_, _) =>
         {
-            CancelBlankPress();
+            CancelHandleDrag();
             _openMenus.Add(menu);
             _windowStyle.SetDraggingEnabled(false);
         };
@@ -296,18 +359,16 @@ public sealed partial class MainWindow : Window
         finally { _languageBusy = false; _languageTask = null; _settings.IsEnabled = true; }
     }
 
-    private void LoadHistory()
+    private void ArchivePreviousHistory()
     {
         try
         {
-            var loaded = _store.Load(); _savedSessions.Clear();
-            _savedSessions.AddRange(loaded.Sessions.Select(x => x.Record));
-            if (loaded.Unreadable > 0) AutomationProperties.SetHelpText(_history, $"{loaded.Unreadable} 个历史文件无法读取。");
+            _store.ArchivePending();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { AutomationProperties.SetHelpText(_history, "历史读取失败：" + ex.Message); }
+        { AutomationProperties.SetHelpText(_history, "上次历史归档失败，原文件已保留，退出时将重试：" + ex.Message); }
     }
-    private IReadOnlyList<SessionRecord> GetHistorySessions() => HistoryDocument.Sessions(_savedSessions.Append(_transcript.Snapshot()));
+    private IReadOnlyList<SessionRecord> GetHistorySessions() => [_transcript.Snapshot()];
     private void ShowHistory()
     {
         if (_historyWindow != null) { _historyWindow.Refresh(true); NativeWindowStyle.Restore(_historyWindow); return; }
@@ -340,24 +401,44 @@ public sealed partial class MainWindow : Window
         try
         {
             if (_saveTask != null) await _saveTask;
-            await Task.Run(_store.Clear); _savedSessions.Clear(); _transcript.Clear(_currentCaption);
+            await Task.Run(_store.Clear); _transcript.Clear(_currentCaption);
             _savedRevision = _transcript.Revision; _lastSave = DateTime.UtcNow; _saveError = null;
             _historyWindow?.Refresh(true); return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { LoadHistory(); _savedRevision = -1; return "清空历史未完成，请检查文件权限后重试。\n" + ex.Message; }
+        { _savedRevision = -1; return "清空历史未完成，请检查文件权限后重试。\n" + ex.Message; }
         finally { _clearingHistory = false; }
+    }
+
+    private async Task<bool> ArchiveHistoryAsync()
+    {
+        if (!await PersistAsync()) return false;
+        try
+        {
+            await Task.Run(_store.ArchivePending);
+            _transcript.Clear(_currentCaption);
+            _savedRevision = _transcript.Revision;
+            _historyWindow?.Refresh(true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { _saveError = ex.Message; return false; }
     }
 
     internal async Task ShutdownAsync()
     {
         if (_closing) return;
         _closing = true; _timer.Stop(); _menu?.Hide(); SaveAppearance();
+        CancelHandleDrag();
+        if (_historyPathTask != null) await _historyPathTask;
         if (_languageTask != null) await _languageTask;
         if (_clearTask != null) await _clearTask;
         if (_saveTask != null) await _saveTask;
-        if (!await PersistAsync() && await Ui.Dialog(this, "历史保存失败", "历史保存失败，是否仍关闭？\n" + _saveError, "仍关闭") != ContentDialogResult.Primary)
-        { _closing = false; if (_startCapture) _timer.Start(); return; }
+        if (!await ArchiveHistoryAsync())
+        {
+            await Ui.Dialog(this, "历史归档失败", "历史尚未完成保存和清空，请检查存储权限后再次关闭。原记录已保留。\n" + _saveError);
+            _closing = false; if (_startCapture) _timer.Start(); return;
+        }
         _capture.Received -= OnCaptureReceived; await _capture.DisposeAsync();
         if (_startCapture) await NativeCaptionLifetime.CloseAsync();
         _nativeTimer.Stop(); ReleaseNativeSurfaces(); NativeLanguageSurfaces.RestoreAll();

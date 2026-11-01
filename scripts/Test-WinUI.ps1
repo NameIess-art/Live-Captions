@@ -63,4 +63,14 @@ if (Test-Path -LiteralPath $Report) { Remove-Item -LiteralPath $Report }
 $code = [WinUiTestLaunch]::Run($Executable, $Report, $root)
 if (Test-Path -LiteralPath $Report) { Get-Content -LiteralPath $Report }
 if ($code -ne 0 -or !(Test-Path -LiteralPath $Report)) { throw "WinUI 3 self-test failed ($code)." }
+$result = Get-Content -LiteralPath $Report -Raw | ConvertFrom-Json
+if ($result.HistoryRoot) {
+    $historyRoot = [IO.Path]::GetFullPath($result.HistoryRoot)
+    if ([IO.Path]::GetDirectoryName($historyRoot) -ne [IO.Path]::GetDirectoryName($Report) -or
+        ![IO.Path]::GetFileName($historyRoot).StartsWith('winui-test-')) { throw 'Invalid isolated history directory.' }
+    if (@(Get-ChildItem -LiteralPath $historyRoot -Filter '*.json' -File).Count -ne 0) { throw 'Shutdown left active history checkpoints.' }
+    if (@(Get-ChildItem -LiteralPath (Join-Path $historyRoot 'Archives') -Filter '*.md' -File).Count -lt 2) { throw 'Shutdown did not archive the final session.' }
+    if (@(Get-ChildItem -LiteralPath (Join-Path $historyRoot 'Archives') -File | Where-Object { $_.Extension -ne '.md' }).Count -ne 0) { throw 'Shutdown produced a non-Markdown archive.' }
+    Write-Output 'Verified process exit: history archived and active checkpoints cleared.'
+}
 

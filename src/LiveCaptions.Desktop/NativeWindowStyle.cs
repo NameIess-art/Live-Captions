@@ -150,7 +150,7 @@ internal sealed class NativeWindowStyle
         }
         if (_caption)
         {
-            if (message == 0x112 && (wParam.ToInt64() & 0xFFF0) == 0xF030 ||
+            if (message == 0x112 && (wParam.ToInt64() & 0xFFF0) is 0xF010 or 0xF030 ||
                 message == 0xA3 && (wParam.ToInt64() == 2 || wParam.ToInt64() is >= 10 and <= 17))
                 return IntPtr.Zero;
             if (message == 0x84 && GetClientRect(hwnd, out var bounds))
@@ -166,8 +166,8 @@ internal sealed class NativeWindowStyle
                 if (top) return new(left ? 13 : right ? 14 : 12);
                 if (bottom) return new(left ? 16 : right ? 17 : 15);
                 if (left || right) return new(left ? 10 : 11);
-                // Blank presses must reach XAML so a short click can clear the
-                // selection, and moving while pressed can immediately drag us.
+                // Client presses reach XAML. Only the dedicated handle may start
+                // dragging; edges still resize normally.
                 return new(1);
             }
         }

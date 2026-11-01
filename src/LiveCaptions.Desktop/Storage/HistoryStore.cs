@@ -13,7 +13,12 @@ internal sealed record SavedSession(string Path, SessionRecord Record)
 internal sealed class HistoryStore
 {
     public string Root { get; }
-    public HistoryStore(string? root = null) => Root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "History");
+    public string ArchiveRoot { get; set; }
+    public HistoryStore(string? root = null)
+    {
+        Root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "History");
+        ArchiveRoot = Path.Combine(Root, "Archives");
+    }
     public void Save(SessionRecord session)
     {
         if (session.Entries.Count == 0) return;
@@ -21,6 +26,29 @@ internal sealed class HistoryStore
         var path = Path.Combine(Root, $"{session.StartedAt:yyyyMMdd-HHmmss}-{session.Id:N}.json");
         var temporary = path + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(session), new UTF8Encoding(false));
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    public void ArchivePending()
+    {
+        var loaded = Load();
+        if (loaded.Unreadable > 0)
+            throw new IOException($"{loaded.Unreadable} 个历史文件无法读取，原文件已保留。");
+        foreach (var saved in loaded.Sessions)
+        {
+            Directory.CreateDirectory(ArchiveRoot);
+            var archive = Path.Combine(ArchiveRoot, Path.GetFileNameWithoutExtension(saved.Path) + ".md");
+            // Remove the checkpoint only after Markdown is saved. Stable names make
+            // retries safe if a previous exit was interrupted.
+            WriteAtomic(archive, HistoryDocument.Markdown([saved.Record]));
+            File.Delete(saved.Path);
+        }
+    }
+
+    private static void WriteAtomic(string path, string content)
+    {
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, content, new UTF8Encoding(false));
         File.Move(temporary, path, overwrite: true);
     }
 

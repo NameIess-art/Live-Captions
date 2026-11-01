@@ -8,6 +8,8 @@ namespace LiveCaptions.Desktop;
 
 internal static class Program
 {
+    internal static SingleInstance? Instance { get; private set; }
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -21,6 +23,16 @@ internal static class Program
             worker.Start(); worker.Join();
             return result;
         }
+        // Workers above are allowed to run alongside the one interactive application.
+        // Self-tests use a report-specific key and never signal the user's running app.
+        var test = Array.IndexOf(args, "--self-test");
+        var instanceName = @"Local\LiveCaptions.Enhanced.Main";
+        if (test >= 0)
+            instanceName += ".Test." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                Encoding.UTF8.GetBytes(Path.GetFullPath(args[test + 1]).ToUpperInvariant())));
+        using var instance = new SingleInstance(instanceName);
+        if (!instance.IsPrimary) return 0;
+        Instance = instance;
         WinRT.ComWrappersSupport.InitializeComWrappers();
         Application.Start(parameter =>
         {

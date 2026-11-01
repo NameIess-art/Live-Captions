@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LiveCaptions.Core\LiveCaptions.Core.csproj" />
+    <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\HistoryStore.cs" Link="HistoryStore.cs" />
+    <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\HistoryPathStore.cs" Link="HistoryPathStore.cs" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LiveCaptions.Core;
 using LiveCaptions.Desktop.Capture;
 using LiveCaptions.Desktop.Storage;
 using Microsoft.UI.Windowing;
@@ -36,8 +37,10 @@ public sealed partial class MainWindow
         Check(AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: true, IsMaximizable: false }, "Topmost, resizing allowed, maximize disabled");
         Check(_caption.Text.IsTextSelectionEnabled, "Live captions selectable");
         Check(_caption.Scroll.VerticalScrollBarVisibility == ScrollBarVisibility.Hidden, "Live scrollbar hidden");
-        Check(new[] { _settings, _history, _close }.All(x => AutomationProperties.GetName(x).Length > 0), "Icon buttons have accessible names");
-        Check(CreateSettingsMenu().Items.Count == 4, "WinUI settings menu contains all entries");
+        Check(new[] { _settings, _history, _close, _dragHandle }.All(x => AutomationProperties.GetName(x).Length > 0), "Icon buttons have accessible names");
+        Check(CreateSettingsMenu().Items.Count == 5 && CreateSettingsMenu().Items.OfType<MenuFlyoutItem>().Any(x => x.Text == "历史保存路径"),
+            "WinUI settings menu includes history save path");
+        await VerifySingleInstanceAsync(reportPath, Check);
         var languages = CreateLanguageMenu(new(true, "中文", [new("中文", true), new("English", true), new("未安装", false)]));
         Check(languages.Items.Count == 2 && ((ToggleMenuFlyoutItem)languages.Items[0]).IsChecked, "Language menu filters installed languages and marks current");
         ProcessCapture(new("connected", "第一句字幕", "test"));
@@ -61,15 +64,18 @@ public sealed partial class MainWindow
         Check(_windowStyle.HitTest(glyphPoint) == 1, "Native text hit test permits selection " + glyph + " / " + glyphPoint);
         var lineEnd = _caption.Text.TransformToVisual(_root).TransformPoint(
             new Windows.Foundation.Point(_caption.Text.ActualWidth - 12, glyph.Y + glyph.Height / 2));
-        Check(!IsDraggable(lineEnd) && _windowStyle.HitTest(lineEnd) == 1,
+        Check(!IsHandlePoint(lineEnd) && _windowStyle.HitTest(lineEnd) == 1,
             "Clicking text-area whitespace keeps selection input instead of dragging");
-        Check(!IsDragSource(_caption.Text) && !IsDragSource(_settings) && IsDragSource(_surface) && !IsDragSource(new Grid()),
-            "Window drag accepts only this window's bare surfaces and excludes text/controls");
-        var buttonPoint = _settings.TransformToVisual(_root).TransformPoint(new Windows.Foundation.Point(20, 20));
+        Check(!IsDragSource(_caption.Text) && !IsDragSource(_settings) && !IsDragSource(_surface) && IsDragSource(_dragHandle) &&
+            IsDragSource(_dragHandle.Content) && !IsDragSource(new Grid()), "Only the drag handle and its icon can start a window drag");
+        var buttonPoint = _settings.TransformToVisual(_root).TransformPoint(new Windows.Foundation.Point(_settings.ActualWidth / 2, _settings.ActualHeight / 2));
         Check(_windowStyle.HitTest(buttonPoint) == 1, "Native button hit test permits clicking");
-        var blankPoint = new Windows.Foundation.Point(_root.ActualWidth - 50, _root.ActualHeight - 20);
-        var blankScreen = new Windows.Graphics.PointInt32(AppWindow.Position.X + (int)Math.Round(blankPoint.X * _windowStyle.Scale),
-            AppWindow.Position.Y + (int)Math.Round(blankPoint.Y * _windowStyle.Scale));
+        var blankPoint = new Windows.Foundation.Point(_root.ActualWidth - 80, _root.ActualHeight - 20);
+        var handlePoint = _dragHandle.TransformToVisual(_root).TransformPoint(new Windows.Foundation.Point(_dragHandle.ActualWidth / 2, _dragHandle.ActualHeight / 2));
+        var handleScreen = new Windows.Graphics.PointInt32(AppWindow.Position.X + (int)Math.Round(handlePoint.X * _windowStyle.Scale),
+            AppWindow.Position.Y + (int)Math.Round(handlePoint.Y * _windowStyle.Scale));
+        Check(handlePoint.X > _root.ActualWidth - 60 && handlePoint.Y > _root.ActualHeight - 40 &&
+            handlePoint.Y > buttonPoint.Y + 20 && _windowStyle.InputHitTest(handlePoint) == 1, "Drag handle sits at the bottom right and receives client input");
         Check(_windowStyle.HitTest(blankPoint) == 1, "Native blank hit test preserves XAML selection and pointer handling");
         Check(_windowStyle.HitTest(new Windows.Foundation.Point(_root.ActualWidth / 2, 2)) == 12, "Native top edge starts resize");
         var input = Microsoft.UI.Input.InputNonClientPointerSource.GetForWindowId(AppWindow.Id);
@@ -77,27 +83,48 @@ public sealed partial class MainWindow
             "WinUI input-site has no immediate native caption drag region");
         Check(input.GetRegionRects(Microsoft.UI.Input.NonClientRegionKind.TopBorder).Length > 0,
             "WinUI input-site has native resize regions");
-        VerifyBlankPress(Check, blankPoint, glyphPoint);
+        await VerifyHandleDragAsync(Check, blankPoint, glyphPoint, handlePoint);
         foreach (var menu in new[] { CreateSettingsMenu(), languages })
         {
             try
             {
-                Check(StartBlankPress(_surface, blankPoint, blankScreen), "Blank press can be active before menu opens");
+                Check(StartHandlePress(_dragHandle, handlePoint, handleScreen), "Handle drag can be active before menu opens");
                 menu.ShowAt(_settings); await Task.Delay(100);
                 Check(!_windowStyle.IsDragEnabled && (input.GetRegionRects(Microsoft.UI.Input.NonClientRegionKind.Caption)?.Length ?? 0) == 0 &&
                     _windowStyle.HitTest(new Windows.Foundation.Point(_root.ActualWidth - 50, _root.ActualHeight - 20)) == 1,
                     "Open menu suspends both native and XAML window dragging");
-                Check(!_blankPressActive && !StartBlankPress(_surface, blankPoint, blankScreen), "Menu cancels active blank press and rejects new window gestures");
+                Check(!_dragPressActive && !StartHandlePress(_dragHandle, handlePoint, handleScreen), "Menu cancels handle dragging and rejects new window gestures");
                 Check(menu.Items.All(item => !IsDragSource(item)), "Menu item text/controls never become a window drag source");
             }
             finally { menu.Hide(); }
             await Task.Delay(100);
             Check(_windowStyle.IsDragEnabled && (input.GetRegionRects(Microsoft.UI.Input.NonClientRegionKind.Caption)?.Length ?? 0) == 0,
-                "Closing menu restores blank press gestures without native dragging bypass");
+                "Closing menu re-enables handle dragging without native dragging bypass");
         }
         Check(GetHistorySessions().Count > 0, "Live captures feed transcript");
         Check(await PersistAsync(), "Session writes to disk");
         Check(_store.Load().Sessions.Count == 1, "Saved session reloads");
+        ShowHistoryPath(); await Task.Delay(150);
+        var pathWindow = _historyPathWindow!;
+        Check(pathWindow.Title == "历史保存路径" && pathWindow.PathText.IsReadOnly && pathWindow.PathText.Text == _store.ArchiveRoot,
+            "History path window displays the actual archive directory");
+        Check(pathWindow.ChooseButton.IsEnabled && pathWindow.OpenButton.IsEnabled && pathWindow.DefaultButton.IsEnabled,
+            "History path window offers choose, open and reset actions");
+        var textBeforePathChange = HistoryDocument.PlainText(GetHistorySessions());
+        var customPath = Path.Combine(testRoot, "selected-archives");
+        await pathWindow.ApplyPathAsync(customPath);
+        Check(_store.ArchiveRoot == customPath && _historyPathStore.Load() == customPath && pathWindow.PathText.Text == customPath,
+            "Changing the history path applies immediately and persists for next startup");
+        await pathWindow.ApplyPathAsync(testRoot);
+        Check(_store.ArchiveRoot == customPath && pathWindow.PathText.Text == customPath,
+            "Invalid history path leaves the current preference and displayed path unchanged");
+        Check(HistoryDocument.PlainText(GetHistorySessions()) == textBeforePathChange && _store.Load().Sessions.Count == 1,
+            "Changing history directory preserves the current transcript and checkpoint");
+        await pathWindow.ApplyPathAsync(_historyPathStore.DefaultPath);
+        Check(_store.ArchiveRoot == _historyPathStore.DefaultPath && _historyPathStore.Load() == _historyPathStore.DefaultPath,
+            "Restore default updates the history preference");
+        await SnapshotAsync((FrameworkElement)pathWindow.Content, Path.Combine(reportRoot, "winui-history-path.png"));
+        pathWindow.Close();
 
         ShowHistory(); await Task.Delay(150);
         Check(_historyWindow != null && _historyWindow.Content is Grid, "Independent WinUI history window");
@@ -163,7 +190,7 @@ public sealed partial class MainWindow
         style.TextPicker.Color = CaptionAppearance.ParseColor("#00FFFF");
         Check(_appearance.TextColor == "#00FFFF", "Native WinUI color picker applies text color");
         foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(((FrameworkElement)style.Content).XamlRoot)) popup.IsOpen = false;
-        var confirmation = Ui.CreateDialog(history, "清空历史", "本机已保存的历史和当前会话历史将被删除，无法撤销。", "清空");
+        var confirmation = Ui.CreateDialog(history, "清空历史", "当前历史及其临时保存记录将被删除，无法撤销。以前自动归档的文件不受影响。", "清空");
         var shown = confirmation.ShowAsync(); await Task.Delay(150);
         Check(confirmation.DefaultButton == ContentDialogButton.Close && confirmation.CloseButtonText == "取消", "Destructive WinUI dialog defaults to cancel");
         await SnapshotAsync(confirmation, Path.Combine(Path.GetDirectoryName(reportPath)!, "winui-confirmation.png"));
@@ -212,8 +239,44 @@ public sealed partial class MainWindow
         await NativeSurfaceRegression.VerifyAsync(Check);
 
         UpdateAppearance(new()); SaveAppearance();
-        File.WriteAllText(reportPath, JsonSerializer.Serialize(new { Framework = "WinUI 3", Passed = checks.Count, Checks = checks },
+        var finalText = HistoryDocument.PlainText(GetHistorySessions());
+        var finalMarkdown = HistoryDocument.Markdown(GetHistorySessions());
+        Check(await ArchiveHistoryAsync(), "Exit archives the final unsaved caption revision");
+        Check(_store.Load().Sessions.Count == 0 && HistoryDocument.PlainText(GetHistorySessions()).Length == 0,
+            "Exit clears checkpoints and in-memory history after archiving");
+        var archive = Directory.GetFiles(_store.ArchiveRoot, "*.md").Single();
+        Check(File.ReadAllText(archive) == finalMarkdown && finalText.Contains("重新连接", StringComparison.Ordinal),
+            "Archive includes the final caption received after the last periodic save");
+        Check(Directory.GetFiles(_store.ArchiveRoot).All(x => Path.GetExtension(x) == ".md"),
+            "History archive produces Markdown files only");
+        ArchivePreviousHistory();
+        Check(HistoryDocument.PlainText(GetHistorySessions()).Length == 0, "Startup leaves previously archived history out of the new session");
+        ProcessCapture(new("connected", "重新连接。下一次记录", "new-source"));
+        Check(HistoryDocument.PlainText(GetHistorySessions()).Contains("下一次记录", StringComparison.Ordinal),
+            "New history records after the previous session was archived");
+        File.WriteAllText(reportPath, JsonSerializer.Serialize(new { Framework = "WinUI 3", HistoryRoot = _store.Root, Passed = checks.Count, Checks = checks },
             new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private async Task VerifySingleInstanceAsync(string reportPath, Action<bool, string> check)
+    {
+        var presenter = (OverlappedPresenter)AppWindow.Presenter;
+        presenter.Minimize();
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var activations = _instanceActivations;
+            var start = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+            { UseShellExecute = false, CreateNoWindow = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
+            start.ArgumentList.Add("--self-test");
+            start.ArgumentList.Add(reportPath);
+            using var duplicate = System.Diagnostics.Process.Start(start) ?? throw new IOException("Duplicate launch failed");
+            await duplicate.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            check(duplicate.ExitCode == 0, $"Duplicate launch {attempt + 1} exits without opening another application");
+            for (var wait = 0; wait < 50 && _instanceActivations == activations; wait++) await Task.Delay(20);
+            check(_instanceActivations > activations, $"Duplicate launch {attempt + 1} signals the existing window");
+        }
+        check(presenter.State != OverlappedPresenterState.Minimized, "Duplicate launch restores the minimized main window");
+        check(!Directory.Exists(_store.Root), "Duplicate launches do not initialize or alter history storage");
     }
 
     private static async Task SnapshotAsync(FrameworkElement element, string path)

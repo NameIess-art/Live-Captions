@@ -36,7 +36,7 @@ public sealed partial class MainWindow
             var transparent = ReadComposedPixel(position);
             check(transparent.R > 230 && transparent.G > 230 && transparent.B > 230,
                 $"Desktop composition: transparent caption reveals white test window ({transparent}; {_windowStyle.DescribePoint(position)})");
-            check(_windowStyle.InputHitTest(position) == 1, "Transparent blank surface routes input to XAML for click/drag handling");
+            check(_windowStyle.InputHitTest(position) == 1, "Transparent blank surface retains XAML selection input");
             UpdateAppearance(_appearance with { BackgroundOpacity = .5 });
             await Task.Delay(120);
             var half = ReadComposedPixel(position);
@@ -56,7 +56,7 @@ public sealed partial class MainWindow
             var opaque = ReadComposedPixel(position);
             check(opaque.R < 25 && opaque.G < 25 && opaque.B < 25,
                 $"Desktop composition: full opacity covers test window ({opaque})");
-            check(_windowStyle.InputHitTest(position) == 1, "Opaque blank surface routes input to XAML for click/drag handling");
+            check(_windowStyle.InputHitTest(position) == 1, "Opaque blank surface retains XAML selection input");
             check(_windowStyle.InputHitTest(new Point(_root.ActualWidth / 2, 2)) == 12, "Actual input-site top edge resizes");
             check(_windowStyle.InputHitTest(new Point(5, 5)) == 13, "Actual input-site corner resizes diagonally");
         }
