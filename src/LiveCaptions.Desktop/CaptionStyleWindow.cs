@@ -22,6 +22,8 @@ internal sealed class CaptionStyleWindow : Window
         SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, SmallChange = 1, LargeChange = 4 };
     internal ComboBox Edges { get; } = new() { Header = "文字效果", HorizontalAlignment = HorizontalAlignment.Stretch };
     internal Slider OpacityInput { get; } = new() { Header = "背景不透明度", Minimum = 0, Maximum = 100, StepFrequency = 1 };
+    internal Slider BorderOpacityInput { get; } = new() { Header = "边框不透明度", Minimum = 0, Maximum = 100, StepFrequency = 1 };
+    internal ToggleSwitch ShadowInput { get; } = new() { Header = "悬浮窗阴影", OnContent = "开", OffContent = "关" };
     private readonly TextBox _textHex = new() { Header = "文字颜色", MaxLength = 7 };
     private readonly TextBox _backgroundHex = new() { Header = "背景颜色", MaxLength = 7 };
     private readonly ColorPicker _textPicker = new() { IsAlphaEnabled = false, IsAlphaSliderVisible = false, IsAlphaTextInputVisible = false };
@@ -60,6 +62,8 @@ internal sealed class CaptionStyleWindow : Window
         textOptions.Children.Add(ColorRow(_textHex, _textPicker, "选择文字颜色", true));
         backgroundOptions.Children.Add(ColorRow(_backgroundHex, _backgroundPicker, "选择背景颜色", false));
         backgroundOptions.Children.Add(OpacityInput);
+        backgroundOptions.Children.Add(BorderOpacityInput);
+        backgroundOptions.Children.Add(ShadowInput);
         TextPage.Content = textOptions;
         BackgroundPage.Content = backgroundOptions;
         var pages = new Grid(); pages.Children.Add(TextPage); pages.Children.Add(BackgroundPage);
@@ -87,6 +91,8 @@ internal sealed class CaptionStyleWindow : Window
         Edges.SelectionChanged += (_, _) => { if (!_updating && Edges.SelectedIndex >= 0) Change(_value with { Edge = (CaptionEdge)Edges.SelectedIndex }); };
         SizeInput.ValueChanged += (_, e) => { if (!_updating && double.IsFinite(e.NewValue)) Change(_value with { FontSize = e.NewValue }); };
         OpacityInput.ValueChanged += (_, e) => { if (!_updating) Change(_value with { BackgroundOpacity = e.NewValue / 100 }); };
+        BorderOpacityInput.ValueChanged += (_, e) => { if (!_updating) Change(_value with { BorderOpacity = e.NewValue / 100 }); };
+        ShadowInput.Toggled += (_, _) => { if (!_updating) Change(_value with { WindowShadowEnabled = ShadowInput.IsOn }); };
         Sync();
     }
 
@@ -137,6 +143,8 @@ internal sealed class CaptionStyleWindow : Window
         Fonts.SelectedIndex = Array.FindIndex(CaptionAppearance.Fonts, x => x.Key == _value.Font);
         SizeInput.Value = _value.FontSize; Edges.SelectedIndex = (int)_value.Edge;
         OpacityInput.Value = _value.BackgroundOpacity * 100;
+        BorderOpacityInput.Value = _value.BorderOpacity * 100;
+        ShadowInput.IsOn = _value.WindowShadowEnabled;
         _textHex.Text = _value.TextColor; _backgroundHex.Text = _value.BackgroundColor;
         _textPicker.Color = CaptionAppearance.ParseColor(_value.TextColor);
         _backgroundPicker.Color = CaptionAppearance.ParseColor(_value.BackgroundColor);

@@ -68,9 +68,20 @@ if ($result.HistoryRoot) {
     $historyRoot = [IO.Path]::GetFullPath($result.HistoryRoot)
     if ([IO.Path]::GetDirectoryName($historyRoot) -ne [IO.Path]::GetDirectoryName($Report) -or
         ![IO.Path]::GetFileName($historyRoot).StartsWith('winui-test-')) { throw 'Invalid isolated history directory.' }
-    if (@(Get-ChildItem -LiteralPath $historyRoot -Filter '*.json' -File).Count -ne 0) { throw 'Shutdown left active history checkpoints.' }
-    if (@(Get-ChildItem -LiteralPath (Join-Path $historyRoot 'Archives') -Filter '*.md' -File).Count -lt 2) { throw 'Shutdown did not archive the final session.' }
+    $unreadableCheckpoint = Join-Path $historyRoot 'unreadable-test.json'
+    if ($result.UnreadableCheckpoint -ne $unreadableCheckpoint -or
+        !(Test-Path -LiteralPath $unreadableCheckpoint) -or
+        (Get-Content -LiteralPath $unreadableCheckpoint -Raw) -ne 'invalid JSON retained for recovery') {
+        throw 'Shutdown did not preserve the unreadable recovery checkpoint.'
+    }
+    if (@(Get-ChildItem -LiteralPath $historyRoot -Filter '*.json' -File | Where-Object { $_.FullName -ne $unreadableCheckpoint }).Count -ne 0) {
+        throw 'Shutdown left active readable history checkpoints.'
+    }
+    $archiveCount = @(Get-ChildItem -LiteralPath (Join-Path $historyRoot 'Archives') -Filter '*.md' -File).Count
+    if ($result.AutoSaveHistory -ne $false -or $archiveCount -ne $result.ArchiveCount -or $archiveCount -lt 1) {
+        throw 'Shutdown with autosave disabled changed the archive files.'
+    }
     if (@(Get-ChildItem -LiteralPath (Join-Path $historyRoot 'Archives') -File | Where-Object { $_.Extension -ne '.md' }).Count -ne 0) { throw 'Shutdown produced a non-Markdown archive.' }
-    Write-Output 'Verified process exit: history archived and active checkpoints cleared.'
+    Write-Output 'Verified process exit: disabled autosave produced no archive or current checkpoint; existing archives and recovery files were retained.'
 }
 

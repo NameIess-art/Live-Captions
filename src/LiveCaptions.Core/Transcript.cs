@@ -94,20 +94,31 @@ public sealed class Transcript
 
     private void ReviseTail(string previous, string current, DateTimeOffset now)
     {
-        var index = _entries.FindLastIndex(x => x.Id == _activeId);
-        if (index < 0) { Add(current, now); return; }
-        var entry = _entries[index];
-        if (entry.Text.EndsWith(previous, StringComparison.Ordinal))
-            _entries[index] = entry with { Text = entry.Text[..^previous.Length] + current };
-        else
+        var active = _entries.FindLastIndex(x => x.Id == _activeId);
+        if (active < 0) { Add(current, now); return; }
+        var prefix = CommonPrefix(previous, current);
+        var remaining = previous.Length;
+        // The native snapshot can span several sentence entries. Match its
+        // changed suffix backwards, then replace only the affected history tail.
+        // Entries before the change keep their IDs, timestamps and paragraph breaks.
+        for (var index = active; index >= 0 && !_entries[index].IsNotice; index--)
         {
-            // A native snapshot may include preceding, already segmented sentences.
-            var offset = previous.LastIndexOf(entry.Text, StringComparison.Ordinal);
-            if (offset >= 0 && CommonPrefix(previous, current) >= offset)
-                _entries[index] = entry with { Text = current[offset..] };
-            else
-                Add(current, now);
+            var entry = _entries[index];
+            var count = Math.Min(entry.Text.Length, remaining - prefix);
+            if (!entry.Text.AsSpan(entry.Text.Length - count).SequenceEqual(previous.AsSpan(remaining - count, count))) break;
+            remaining -= count;
+            // Append trims whitespace when it starts a new sentence entry.
+            if (count == entry.Text.Length)
+                while (remaining > prefix && char.IsWhiteSpace(previous[remaining - 1])) remaining--;
+            if (remaining != prefix) continue;
+            var replacement = entry.Text[..(entry.Text.Length - count)] + current[prefix..];
+            _entries[index] = entry with { Text = replacement };
+            _entries.RemoveRange(index + 1, active - index);
+            if (replacement.Length == 0) _entries.RemoveAt(index);
+            _activeId = _entries.LastOrDefault() is { IsNotice: false } tail ? tail.Id : null;
+            return;
         }
+        Add(current, now);
     }
 
     private static bool EndsSentence(string text) => text.TrimEnd().LastOrDefault() is '。' or '！' or '？' or '.' or '!' or '?';

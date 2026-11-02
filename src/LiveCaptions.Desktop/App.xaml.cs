@@ -17,8 +17,15 @@ public partial class App : Application
     {
         var arguments = Environment.GetCommandLineArgs();
         var test = Array.IndexOf(arguments, "--self-test");
-        _window = new MainWindow(test < 0, test < 0 ? null :
-            Path.Combine(Path.GetDirectoryName(Path.GetFullPath(arguments[test + 1]))!, "winui-test-" + Guid.NewGuid().ToString("N")));
+        if (test < 0) _window = new MainWindow();
+        else
+        {
+            // UI regressions must never register the test executable for real logon.
+            string? startupCommand = null;
+            _window = new MainWindow(false,
+                Path.Combine(Path.GetDirectoryName(Path.GetFullPath(arguments[test + 1]))!, "winui-test-" + Guid.NewGuid().ToString("N")),
+                new Storage.StartupRegistration(() => startupCommand, command => startupCommand = command, Environment.ProcessPath!));
+        }
         _window.Activate();
         var dispatcher = _window.DispatcherQueue;
         Program.Instance!.Listen(() => dispatcher.TryEnqueue(_window.ActivateExistingInstance));

@@ -59,6 +59,27 @@ public sealed partial class MainWindow
             check(_windowStyle.InputHitTest(position) == 1, "Opaque blank surface retains XAML selection input");
             check(_windowStyle.InputHitTest(new Point(_root.ActualWidth / 2, 2)) == 12, "Actual input-site top edge resizes");
             check(_windowStyle.InputHitTest(new Point(5, 5)) == 13, "Actual input-site corner resizes diagonally");
+            var shadowPoints = new[]
+            {
+                new Point(-3, _root.ActualHeight / 2), new Point(_root.ActualWidth + 3, _root.ActualHeight / 2),
+                new Point(_root.ActualWidth / 2, -3), new Point(_root.ActualWidth / 2, _root.ActualHeight + 3)
+            };
+            UpdateAppearance(_appearance with { WindowShadowEnabled = false });
+            await Task.Delay(180);
+            var noShadow = shadowPoints.Select(ReadComposedPixel).ToArray();
+            UpdateAppearance(_appearance with { BackgroundOpacity = 0 });
+            await Task.Delay(120);
+            var transparentWithoutShadow = ReadComposedPixel(position);
+            check(transparentWithoutShadow.R > 230 && transparentWithoutShadow.G > 230 && transparentWithoutShadow.B > 230 &&
+                _windowStyle.InputHitTest(new Point(_root.ActualWidth / 2, 2)) == 12,
+                "Disabling the shadow preserves desktop transparency and native edge resizing");
+            UpdateAppearance(_appearance with { WindowShadowEnabled = true, BackgroundOpacity = 1 });
+            await Task.Delay(180);
+            var shadow = shadowPoints.Select(ReadComposedPixel).ToArray();
+            check(noShadow.All(c => c.R > 245 && c.G > 245 && c.B > 245) &&
+                shadow.Where((color, i) => color.R < noShadow[i].R - 3).Any(),
+                "Actual desktop pixels outside the window respond to the shadow switch: off=" +
+                string.Join(",", noShadow) + "; on=" + string.Join(",", shadow));
         }
         finally { DestroyWindow(backing); UpdateAppearance(original); AppWindow.MoveAndResize(bounds); }
 

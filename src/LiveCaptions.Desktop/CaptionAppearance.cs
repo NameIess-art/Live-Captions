@@ -15,6 +15,8 @@ internal sealed record CaptionAppearance
     public CaptionEdge Edge { get; init; }
     public string BackgroundColor { get; init; } = "#252525";
     public double BackgroundOpacity { get; init; } = 1;
+    public double BorderOpacity { get; init; } = 1;
+    public bool WindowShadowEnabled { get; init; } = true;
     internal static readonly CaptionFont[] Fonts =
     [
         new("mono-serif", "单衬线", "Courier New, SimSun"),
@@ -31,7 +33,8 @@ internal sealed record CaptionAppearance
         FontSize = double.IsFinite(FontSize) ? Math.Clamp(FontSize, 12, 96) : 22,
         Edge = Enum.IsDefined(Edge) ? Edge : CaptionEdge.None,
         BackgroundColor = NormalizeColor(BackgroundColor, "#252525"),
-        BackgroundOpacity = double.IsFinite(BackgroundOpacity) ? Math.Clamp(BackgroundOpacity, 0, 1) : 1
+        BackgroundOpacity = double.IsFinite(BackgroundOpacity) ? Math.Clamp(BackgroundOpacity, 0, 1) : 1,
+        BorderOpacity = double.IsFinite(BorderOpacity) ? Math.Clamp(BorderOpacity, 0, 1) : 1
     };
     internal static string NormalizeColor(string? value, string fallback) =>
         value?.Length == 7 && value[0] == '#' && uint.TryParse(value.AsSpan(1), NumberStyles.HexNumber, null, out _)
@@ -44,6 +47,12 @@ internal sealed record CaptionAppearance
     {
         var color = ParseColor(BackgroundColor);
         color.A = (byte)Math.Round(BackgroundOpacity * 255);
+        return new(color);
+    }
+    internal SolidColorBrush BorderBrush()
+    {
+        var color = ParseColor("#555555");
+        color.A = (byte)Math.Round(BorderOpacity * 255);
         return new(color);
     }
 }

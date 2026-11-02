@@ -4,6 +4,8 @@
     <ProjectReference Include="..\..\src\LiveCaptions.Core\LiveCaptions.Core.csproj" />
     <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\HistoryStore.cs" Link="HistoryStore.cs" />
     <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\HistoryPathStore.cs" Link="HistoryPathStore.cs" />
+    <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\StartupRegistration.cs" Link="StartupRegistration.cs" />
+    <Compile Include="..\..\src\LiveCaptions.Desktop\Storage\PreferencesStore.cs" Link="PreferencesStore.cs" />
   </ItemGroup>
 
   <PropertyGroup>

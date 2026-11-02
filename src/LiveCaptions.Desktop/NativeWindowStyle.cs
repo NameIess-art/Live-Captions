@@ -15,6 +15,7 @@ internal sealed class NativeWindowStyle
     private RectInt32 _normalBounds;
     private bool _restoring;
     private readonly bool _caption;
+    private bool _shadowEnabled = true;
     private readonly InputNonClientPointerSource? _input;
     internal bool IsDragEnabled { get; private set; } = true;
     internal void SetDraggingEnabled(bool enabled)
@@ -93,7 +94,7 @@ internal sealed class NativeWindowStyle
         if (!SetWindowSubclass(_handle, _callback, 1, 0)) throw new InvalidOperationException("无法初始化窗口。");
         if (caption)
         {
-            DisableSystemFrame(_handle);
+            ApplySystemFrame(_handle);
             ConfigureTransparentSurface(_handle);
             SetWindowPos(_handle, IntPtr.Zero, 0, 0, 0, 0, 0x37); // FRAMECHANGED, NOMOVE/SIZE/ZORDER/ACTIVATE
             _input = InputNonClientPointerSource.GetForWindowId(window.AppWindow.Id);
@@ -137,7 +138,7 @@ internal sealed class NativeWindowStyle
         if (_caption && message is 0x31E or 0x31A or 0x2E0) // Composition, theme, or DPI changes.
         {
             var result = DefSubclassProc(hwnd, message, wParam, lParam);
-            DisableSystemFrame(hwnd);
+            ApplySystemFrame(hwnd);
             if (message == 0x31E) ConfigureTransparentSurface(hwnd);
             return result;
         }
@@ -188,10 +189,22 @@ internal sealed class NativeWindowStyle
         }
         finally { DeleteObject(region); }
     }
-    private static void DisableSystemFrame(IntPtr handle)
+    internal void SetShadowEnabled(bool enabled)
     {
-        var disabled = 1; // DWMWA_NCRENDERING_POLICY / DWMNCRP_DISABLED
-        Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(handle, 2, ref disabled, 4));
+        if (!_caption || _shadowEnabled == enabled) return;
+        _shadowEnabled = enabled;
+        ApplySystemFrame(_handle);
+        ConfigureTransparentSurface(_handle);
+        SetWindowPos(_handle, IntPtr.Zero, 0, 0, 0, 0, 0x37);
+    }
+    private void ApplySystemFrame(IntPtr handle)
+    {
+        // Keep native frame painting disabled for both modes. On Windows 11 the
+        // rounded-window treatment carries the outer shadow independently of it.
+        var policy = 1; // DWMNCRP_DISABLED
+        Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(handle, 2, ref policy, 4));
+        var corners = _shadowEnabled ? 2 : 1; // DWMWCP_ROUND / DWMWCP_DONOTROUND
+        Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(handle, 33, ref corners, 4));
         var noBorder = -2; // DWMWA_BORDER_COLOR / DWMWA_COLOR_NONE
         DwmSetWindowAttribute(handle, 34, ref noBorder, 4);
     }

@@ -28,12 +28,15 @@ public sealed partial class MainWindow : Window
     private readonly CaptureClient _capture = new();
     private readonly HistoryStore _store;
     private readonly HistoryPathStore _historyPathStore;
+    private readonly PreferencesStore _preferencesStore;
+    private bool _autoSaveHistory, _changingAutoSave;
+    private Task<string?>? _autoSaveTask;
+    private readonly StartupRegistration _startup;
     private readonly DispatcherQueueTimer _timer, _nativeTimer, _appearanceTimer;
     private readonly AppearanceStore _appearanceStore;
     private readonly bool _startCapture;
     private readonly Grid _root = new() { RequestedTheme = ElementTheme.Dark, Background = new SolidColorBrush(Colors.Transparent) };
-    private readonly Border _surface = new() { CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
-        BorderBrush = new SolidColorBrush(CaptionAppearance.ParseColor("#555555")) };
+    private readonly Border _surface = new() { CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1) };
     private readonly CaptionView _caption = new() { Margin = new Thickness(16, 10, 8, 10) };
     private readonly Button _settings = Ui.IconButton("\uE713", "设置");
     private readonly Button _history = Ui.IconButton("\uE81C", "历史");
@@ -42,7 +45,7 @@ public sealed partial class MainWindow : Window
     private readonly NativeWindowStyle _windowStyle;
     private HistoryWindow? _historyWindow;
     private CaptionStyleWindow? _styleWindow;
-    private HistoryPathWindow? _historyPathWindow;
+    private PreferencesWindow? _preferencesWindow;
     private Task<string?>? _historyPathTask;
     private MenuFlyout? _menu;
     private readonly HashSet<MenuFlyout> _openMenus = [];
@@ -51,6 +54,7 @@ public sealed partial class MainWindow : Window
     private bool _showNativeCaptions, _closing, _allowClose, _connected, _appearanceDirty, _languageBusy, _clearingHistory;
     private string _currentCaption = "";
     private string? _source, _saveError;
+    private string _historyWarning = "";
     private int _savedRevision = -1;
     private DateTime _lastSave = DateTime.MinValue;
     private Task<bool>? _saveTask;
@@ -58,13 +62,21 @@ public sealed partial class MainWindow : Window
     private Task<LanguageSettingsResult>? _languageTask;
 
     public MainWindow(bool startCapture = true, string? historyRoot = null)
+        : this(startCapture, historyRoot, StartupRegistration.ForCurrentUser()) { }
+
+    internal MainWindow(bool startCapture, string? historyRoot, StartupRegistration startup)
     {
+        _startup = startup;
         _startCapture = startCapture;
         _store = new(historyRoot);
         _historyPathStore = new(historyRoot == null
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "history-settings.json")
             : Path.Combine(historyRoot, "preferences", "history-settings.json"), _store.Root);
         _store.ArchiveRoot = _historyPathStore.Load();
+        _preferencesStore = new(historyRoot == null
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "preferences.json")
+            : Path.Combine(historyRoot, "preferences", "preferences.json"));
+        _autoSaveHistory = _preferencesStore.Load().AutoSaveHistory;
         _appearanceStore = new(historyRoot == null
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveCaptions.Enhanced", "caption-style.json")
             : Path.Combine(historyRoot, "preferences", "caption-style.json"));
@@ -98,7 +110,7 @@ public sealed partial class MainWindow : Window
         _timer.Tick += async (_, _) =>
         {
             _historyWindow?.Refresh();
-            if (DateTime.UtcNow - _lastSave > TimeSpan.FromSeconds(5) && _savedRevision != _transcript.Revision)
+            if (_autoSaveHistory && !_changingAutoSave && DateTime.UtcNow - _lastSave > TimeSpan.FromSeconds(5) && _savedRevision != _transcript.Revision)
             { _lastSave = DateTime.UtcNow; await PersistAsync(); }
         };
         _nativeTimer = DispatcherQueue.CreateTimer(); _nativeTimer.Interval = TimeSpan.FromMilliseconds(500);
@@ -115,7 +127,7 @@ public sealed partial class MainWindow : Window
         {
             CancelHandleDrag();
             _nativeTimer.Stop(); ReleaseNativeSurfaces();
-            _historyWindow?.Close(); _styleWindow?.Close(); _historyPathWindow?.Close();
+            _historyWindow?.Close(); _styleWindow?.Close(); _preferencesWindow?.Close();
             Application.Current.Exit();
         };
         ApplyAppearance(); ArchivePreviousHistory();
@@ -168,7 +180,9 @@ public sealed partial class MainWindow : Window
     }
     private void ApplyAppearance()
     {
-        _surface.Background = _appearance.BackgroundBrush(); _caption.Apply(_appearance);
+        _surface.Background = _appearance.BackgroundBrush(); _surface.BorderBrush = _appearance.BorderBrush();
+        _windowStyle.SetShadowEnabled(_appearance.WindowShadowEnabled);
+        _caption.Apply(_appearance);
         UpdateMinimumHeight();
     }
     private string? UpdateAppearance(CaptionAppearance appearance)
@@ -262,24 +276,52 @@ public sealed partial class MainWindow : Window
         };
         var style = new MenuFlyoutItem { Text = "字幕样式", Icon = new FontIcon { Glyph = "\uE790" } };
         style.Click += (_, _) => ShowStyle();
-        var historyPath = new MenuFlyoutItem { Text = "历史保存路径", Icon = new FontIcon { Glyph = "\uE8B7" } };
-        historyPath.Click += (_, _) => ShowHistoryPath();
+        var preferences = new MenuFlyoutItem { Text = "首选项", Icon = new FontIcon { Glyph = "\uE115" } };
+        preferences.Click += (_, _) => ShowPreferences();
         var native = new ToggleMenuFlyoutItem { Text = "显示原生字幕", IsChecked = _showNativeCaptions };
         native.Click += (_, _) =>
         {
             _showNativeCaptions = native.IsChecked;
             if (_showNativeCaptions) ReleaseNativeSurfaces(); else MaintainNativeVisibility();
         };
-        menu.Items.Add(language); menu.Items.Add(style); menu.Items.Add(historyPath); menu.Items.Add(new MenuFlyoutSeparator()); menu.Items.Add(native);
+        menu.Items.Add(language); menu.Items.Add(style); menu.Items.Add(preferences);
+        menu.Items.Add(new MenuFlyoutSeparator()); menu.Items.Add(native);
         return ObserveMenu(menu);
     }
-    private void ShowHistoryPath()
+    private void ShowPreferences()
     {
-        if (_historyPathWindow != null) { NativeWindowStyle.Restore(_historyPathWindow); return; }
-        _historyPathWindow = new(_store.ArchiveRoot, _historyPathStore.DefaultPath, ChangeHistoryPathAsync);
-        NativeWindowStyle.SetOwner(_historyPathWindow, this);
-        _historyPathWindow.Closed += (_, _) => _historyPathWindow = null;
-        _historyPathWindow.Activate();
+        if (_preferencesWindow != null) { NativeWindowStyle.Restore(_preferencesWindow); return; }
+        _preferencesWindow = new(_store.ArchiveRoot, _historyPathStore.DefaultPath, ChangeHistoryPathAsync,
+            _autoSaveHistory, ChangeAutoSaveHistoryAsync, _startup);
+        NativeWindowStyle.SetOwner(_preferencesWindow, this);
+        _preferencesWindow.Closed += (_, _) => _preferencesWindow = null;
+        _preferencesWindow.Activate();
+    }
+    private Task<string?> ChangeAutoSaveHistoryAsync(bool enabled)
+    {
+        if (_closing) return Task.FromResult<string?>("应用正在关闭，请下次打开后修改。");
+        if (_autoSaveTask is { IsCompleted: false }) return Task.FromResult<string?>("正在保存首选项，请稍后重试。");
+        return _autoSaveTask = ChangeAutoSaveHistoryCoreAsync(enabled);
+    }
+    private async Task<string?> ChangeAutoSaveHistoryCoreAsync(bool enabled)
+    {
+        _changingAutoSave = true;
+        try
+        {
+            if (_saveTask != null) await _saveTask;
+            if (_clearTask != null) await _clearTask;
+            if (!enabled)
+            {
+                var session = _transcript.Snapshot();
+                await Task.Run(() => _store.Clear(session));
+            }
+            await Task.Run(() => _preferencesStore.Save(new() { AutoSaveHistory = enabled }));
+            _autoSaveHistory = enabled; _savedRevision = -1; _lastSave = DateTime.MinValue; _saveError = null;
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { _savedRevision = -1; return "自动保存历史设置未更新，请检查存储权限后重试。\n" + ex.Message; }
+        finally { _changingAutoSave = false; }
     }
     private Task<string?> ChangeHistoryPathAsync(string path)
     {
@@ -361,25 +403,33 @@ public sealed partial class MainWindow : Window
 
     private void ArchivePreviousHistory()
     {
+        if (!_autoSaveHistory) return;
         try
         {
-            _store.ArchivePending();
+            ReportUnreadableHistory(_store.ArchivePending());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { AutomationProperties.SetHelpText(_history, "上次历史归档失败，原文件已保留，退出时将重试：" + ex.Message); }
+    }
+    private void ReportUnreadableHistory(int count)
+    {
+        _historyWarning = count == 0 ? "" : $"{count} 个历史文件无法读取，已保留在 {_store.Root}，其他记录可正常归档和退出。";
+        AutomationProperties.SetHelpText(_history, _historyWarning);
+        _historyWindow?.ReportStorageWarning(_historyWarning);
     }
     private IReadOnlyList<SessionRecord> GetHistorySessions() => [_transcript.Snapshot()];
     private void ShowHistory()
     {
         if (_historyWindow != null) { _historyWindow.Refresh(true); NativeWindowStyle.Restore(_historyWindow); return; }
         _historyWindow = new(GetHistorySessions, ClearHistoryAsync, () => _transcript.Revision);
+        _historyWindow.ReportStorageWarning(_historyWarning);
         NativeWindowStyle.SetOwner(_historyWindow, this);
         _historyWindow.Closed += (_, _) => _historyWindow = null;
         _historyWindow.Activate();
     }
     private Task<bool> PersistAsync()
     {
-        if (_clearingHistory) return Task.FromResult(true);
+        if (!_autoSaveHistory || _changingAutoSave || _clearingHistory) return Task.FromResult(true);
         if (_saveTask is { IsCompleted: false }) return _saveTask;
         return _saveTask = SaveSnapshotAsync(_transcript.Snapshot(), _transcript.Revision);
     }
@@ -401,7 +451,8 @@ public sealed partial class MainWindow : Window
         try
         {
             if (_saveTask != null) await _saveTask;
-            await Task.Run(_store.Clear); _transcript.Clear(_currentCaption);
+            var session = _transcript.Snapshot();
+            await Task.Run(() => _store.Clear(session)); _transcript.Clear(_currentCaption);
             _savedRevision = _transcript.Revision; _lastSave = DateTime.UtcNow; _saveError = null;
             _historyWindow?.Refresh(true); return null;
         }
@@ -410,12 +461,17 @@ public sealed partial class MainWindow : Window
         finally { _clearingHistory = false; }
     }
 
-    private async Task<bool> ArchiveHistoryAsync()
+    private async Task<bool> FinalizeHistoryAsync()
     {
         if (!await PersistAsync()) return false;
         try
         {
-            await Task.Run(_store.ArchivePending);
+            if (_autoSaveHistory) ReportUnreadableHistory(await Task.Run(_store.ArchivePending));
+            else
+            {
+                var session = _transcript.Snapshot();
+                await Task.Run(() => _store.Clear(session));
+            }
             _transcript.Clear(_currentCaption);
             _savedRevision = _transcript.Revision;
             _historyWindow?.Refresh(true);
@@ -430,13 +486,16 @@ public sealed partial class MainWindow : Window
         if (_closing) return;
         _closing = true; _timer.Stop(); _menu?.Hide(); SaveAppearance();
         CancelHandleDrag();
+        if (_autoSaveTask != null) await _autoSaveTask;
         if (_historyPathTask != null) await _historyPathTask;
         if (_languageTask != null) await _languageTask;
         if (_clearTask != null) await _clearTask;
         if (_saveTask != null) await _saveTask;
-        if (!await ArchiveHistoryAsync())
+        if (!await FinalizeHistoryAsync())
         {
-            await Ui.Dialog(this, "历史归档失败", "历史尚未完成保存和清空，请检查存储权限后再次关闭。原记录已保留。\n" + _saveError);
+            await Ui.Dialog(this, "历史处理失败", (_autoSaveHistory
+                ? "历史尚未完成保存和清空，请检查存储权限后再次关闭。原记录已保留。\n"
+                : "本次历史的临时记录未能删除，请检查存储权限后再次关闭。\n") + _saveError);
             _closing = false; if (_startCapture) _timer.Start(); return;
         }
         _capture.Received -= OnCaptureReceived; await _capture.DisposeAsync();

@@ -26,9 +26,10 @@ public sealed partial class MainWindow
         try
         {
             UpdateAppearance(original with { BackgroundColor = "#000000", BackgroundOpacity = 1 });
-            foreach (var round in Enumerable.Range(0, 2))
+            foreach (var (round, shadowEnabled) in new[] { (0, true), (1, false) })
             for (var displayIndex = 0; displayIndex < displays.Count; displayIndex++)
             {
+                UpdateAppearance(_appearance with { WindowShadowEnabled = shadowEnabled });
                 var display = displays[displayIndex];
                 var area = display.WorkArea;
                 var origin = AppWindow.Position;
@@ -42,8 +43,9 @@ public sealed partial class MainWindow
                 await Task.Delay(220);
                 _root.UpdateLayout();
                 var scale = _windowStyle.Scale;
-                check(FrameDwmGetWindowAttribute(handle, 1, out var rendering, 4) == 0 && rendering == 0,
-                    $"DWM non-client frame rendering is disabled on monitor {display.DisplayId.Value}");
+                check(FrameDwmGetWindowAttribute(handle, 1, out var rendering, 4) == 0 && rendering == 0 &&
+                    FrameDwmGetWindowAttribute(handle, 33, out var corners, 4) == 0 && corners == (shadowEnabled ? 2 : 1),
+                    $"DWM shadow is {shadowEnabled} and native frame painting stays disabled on monitor {display.DisplayId.Value}");
                 check(_windowStyle.IsFullyClient && _windowStyle.HasResizeFrame,
                     $"Monitor transition {round + 1}/{display.DisplayId.Value} at {scale * 100:F0}% keeps a full client surface and resize frame");
                 var points = new[]
@@ -74,11 +76,14 @@ public sealed partial class MainWindow
             }
             // Emulate the system rebuilding its frame state on a theme change.
             // The application must restore the no-frame policy after default handling.
-            var enabled = 2; // DWMNCRP_ENABLED
+            var enabled = 2;
             Marshal.ThrowExceptionForHR(FrameDwmSetWindowAttribute(handle, 2, ref enabled, 4));
+            var opposite = _appearance.WindowShadowEnabled ? 1 : 2;
+            Marshal.ThrowExceptionForHR(FrameDwmSetWindowAttribute(handle, 33, ref opposite, 4));
             FrameSendMessage(handle, 0x31A, IntPtr.Zero, IntPtr.Zero); // WM_THEMECHANGED
-            check(FrameDwmGetWindowAttribute(handle, 1, out var restored, 4) == 0 && restored == 0,
-                "Theme changes restore disabled system frame rendering after default handling");
+            check(FrameDwmGetWindowAttribute(handle, 1, out var restored, 4) == 0 && restored == 0 &&
+                FrameDwmGetWindowAttribute(handle, 33, out var restoredCorners, 4) == 0 && restoredCorners == (_appearance.WindowShadowEnabled ? 2 : 1),
+                "Theme changes restore the selected shadow policy after default handling");
             check(true, $"Monitor frame regression visited {displays.Count} displays twice");
         }
         finally { UpdateAppearance(original); AppWindow.MoveAndResize(bounds); }

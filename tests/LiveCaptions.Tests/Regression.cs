@@ -8,6 +8,8 @@ internal static class Regression
     {
         var tests = new (string Name, Action Test)[]
         {
+            ("automatic history saving preference persists, defaults compatibly and survives failed writes", PreferencesRegression.Verify),
+            ("startup quotes the executable, persists, removes and reports write failures", StartupRegression.Verify),
             ("history archive preserves sessions, retries safely and excludes archives from the next run", HistoryStoreRegression.Verify),
             ("custom history path persists, archives there, resets and retains old files on failure", HistoryPathRegression.Verify),
             ("all history is chronological and the current saved session appears once", () =>
@@ -39,6 +41,35 @@ internal static class Regression
             ("rolling native buffer retains scrolled text", () => Check(["这是第一句话。这是第二句话", "这是第二句话。还有第三句话。"], "这是第一句话。这是第二句话。还有第三句话。")),
             ("correction after scrolling retains old prefix", () => Check(["之前内容。今天下雨了", "今天下雨了我们", "今天下雪了我们"], "之前内容。今天下雪了我们")),
             ("sentence boundaries do not duplicate earlier text", () => Check(["第一句话。", "第一句话。第二句错", "第一句话。第二句对。"], "第一句话。第二句对。")),
+            ("correction to an earlier segmented sentence replaces the affected history", () =>
+                Check(["第一句话。", "第一句话。第二句话", "第一句对话。第二句话", "第一句对话。第二句话。第三句话"], "第一句对话。第二句话。第三句话")),
+            ("cross-sentence insertion retains the unchanged history prefix", () =>
+                Check(["更早的内容。", "更早的内容。今天下雨。", "更早的内容。今天下雨。我们出门", "更早的内容。今天下大雨。我们出门"], "更早的内容。今天下大雨。我们出门")),
+            ("cross-sentence deletion removes the superseded tail", () =>
+                Check(["第一句话很长。", "第一句话很长。第二句话", "第一句话。第二句话"], "第一句话。第二句话")),
+            ("retracting a segmented sentence leaves no empty entry", () =>
+            {
+                var t = new Transcript(); var now = DateTimeOffset.Now;
+                t.Accept("第一句话。", now); t.Accept("第一句话。第二句话", now);
+                t.Accept("第一句话。", now);
+                Assert(t.Entries.Count == 1 && t.Entries[0].Text == "第一句话。", "Retracted sentence left stale or empty text");
+                t.Accept("第一句话。新的第二句", now);
+                Assert(string.Concat(t.Entries.Select(x => x.Text)) == "第一句话。新的第二句", "Append after retraction lost its active entry");
+            }),
+            ("cross-sentence revisions handle trimmed sentence whitespace", () =>
+                Check(["First sentence.", "First sentence. Second sentence.", "First sentence. Second sentence. Third", "First sentence. Revised sentence. Third"], "First sentence.Revised sentence. Third")),
+            ("rolling multi-sentence correction retains text outside the native buffer", () =>
+                Check(["更早的内容。第一句话。", "更早的内容。第一句话。第二句话", "第一句话。第二句话", "第一句对话。第二句话"], "更早的内容。第一句对话。第二句话")),
+            ("corrections preserve unaffected entry identity and time", () =>
+            {
+                var t = new Transcript(); var now = DateTimeOffset.Now;
+                t.Accept("更早的内容。", now); var first = t.Entries[0];
+                t.Accept("更早的内容。第一句话。", now.AddSeconds(1)); var affected = t.Entries[1];
+                t.Accept("更早的内容。第一句话。第二句话", now.AddSeconds(2));
+                t.Accept("更早的内容。第一句对话。第二句话", now.AddSeconds(3));
+                Assert(t.Entries[0] == first && t.Entries[1].Id == affected.Id && t.Entries[1].CapturedAt == affected.CapturedAt,
+                    "Revision replaced the unchanged entry or retimestamped existing speech");
+            }),
             ("spoken repeated sentences are retained", () => Check(["你好。", "你好。你好。", "你好。你好。再见。"], "你好。你好。再见。")),
             ("unrelated new sentence is appended", () => Check(["今日はいい天気です。", "明日は雨でしょう。"], "今日はいい天気です。明日は雨でしょう。")),
             ("blank snapshots do not erase captions", () => Check(["hello world", "", "  ", "hello world!"], "hello world!")),
@@ -86,6 +117,15 @@ internal static class Regression
                 t.Accept("今天下雪了我们出门", now);
                 t.Accept("今天下雪了我们出门。然后回家。", now);
                 Assert(string.Concat(t.Entries.Select(x => x.Text)) == "我们出门。然后回家。", "rolling old text reappeared");
+            }),
+            ("cross-sentence corrections do not restore a cleared prefix", () =>
+            {
+                var t = new Transcript(); var now = DateTimeOffset.Now;
+                t.Clear("清空前的内容。");
+                t.Accept("清空前的内容。第一句话。", now);
+                t.Accept("清空前的内容。第一句话。第二句话", now);
+                t.Accept("清空前的内容。第一句对话。第二句话", now);
+                Assert(string.Concat(t.Entries.Select(x => x.Text)) == "第一句对话。第二句话", "Revision replayed discarded text or duplicated new text");
             }),
             ("snapshot is immutable during later revisions", () =>
             {

@@ -36,12 +36,14 @@ public sealed class HistoryWindow : Window
     internal Button ExportButton { get; } = new() { Content = "导出", MinWidth = 80 };
     internal Button ClearButton { get; } = Ui.IconButton("\uE74D", "清空历史");
     private readonly InfoBar _notice = new() { IsClosable = true };
+    private readonly InfoBar _storageWarning = new() { IsClosable = true, Severity = InfoBarSeverity.Warning };
 
     internal HistoryWindow(Func<IReadOnlyList<SessionRecord>> getSessions, Func<Task<string?>> clear, Func<int> getRevision)
     {
         _getSessions = getSessions; _clear = clear; _getRevision = getRevision; Title = "字幕历史";
         var root = new Grid { RequestedTheme = ElementTheme.Dark, Padding = new Thickness(20), RowSpacing = 12,
             Background = (Brush)Application.Current.Resources["ApplicationPageBackgroundThemeBrush"] };
+        root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -52,6 +54,7 @@ public sealed class HistoryWindow : Window
         actions.Children.Add(CopyButton); actions.Children.Add(ExportButton); actions.Children.Add(ClearButton);
         Grid.SetColumn(actions, 1); toolbar.Children.Add(actions); root.Children.Add(toolbar);
         Grid.SetRow(_notice, 1); root.Children.Add(_notice);
+        Grid.SetRow(_storageWarning, 2); root.Children.Add(_storageWarning);
         HistoryList.ItemsSource = _rows;
         HistoryList.ItemTemplate = (DataTemplate)XamlReader.Load("""
             <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
@@ -78,7 +81,7 @@ public sealed class HistoryWindow : Window
         };
         HistoryList.AddHandler(UIElement.PointerWheelChangedEvent,
             new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => _scrollingUntil = DateTime.UtcNow.AddMilliseconds(200)), true);
-        Grid.SetRow(HistoryList, 2); root.Children.Add(HistoryList); Content = root;
+        Grid.SetRow(HistoryList, 3); root.Children.Add(HistoryList); Content = root;
         var style = new NativeWindowStyle(this) { MinimumWidth = 560, MinimumHeight = 360 };
         style.SetSize(800, 600);
         CopyButton.Click += async (_, _) =>
@@ -98,6 +101,11 @@ public sealed class HistoryWindow : Window
     }
     internal string AllText() => HistoryDocument.PlainText(_getSessions());
     internal string AllMarkdown() => HistoryDocument.Markdown(_getSessions());
+    internal void ReportStorageWarning(string message)
+    {
+        _storageWarning.Message = message;
+        _storageWarning.IsOpen = message.Length > 0;
+    }
     internal void Refresh(bool force = false)
     {
         CopyButton.IsEnabled = ExportButton.IsEnabled = ClearButton.IsEnabled = _rows.Count > 0 && !_clearing;

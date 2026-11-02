@@ -38,8 +38,9 @@ public sealed partial class MainWindow
         Check(_caption.Text.IsTextSelectionEnabled, "Live captions selectable");
         Check(_caption.Scroll.VerticalScrollBarVisibility == ScrollBarVisibility.Hidden, "Live scrollbar hidden");
         Check(new[] { _settings, _history, _close, _dragHandle }.All(x => AutomationProperties.GetName(x).Length > 0), "Icon buttons have accessible names");
-        Check(CreateSettingsMenu().Items.Count == 5 && CreateSettingsMenu().Items.OfType<MenuFlyoutItem>().Any(x => x.Text == "历史保存路径"),
-            "WinUI settings menu includes history save path");
+        Check(CreateSettingsMenu().Items.Count == 5 && CreateSettingsMenu().Items.OfType<MenuFlyoutItem>().Any(x => x.Text == "首选项") &&
+            !CreateSettingsMenu().Items.OfType<MenuFlyoutItem>().Any(x => x.Text is "历史保存路径" or "开机自启"),
+            "Settings menu groups history and startup settings under Preferences");
         await VerifySingleInstanceAsync(reportPath, Check);
         var languages = CreateLanguageMenu(new(true, "中文", [new("中文", true), new("English", true), new("未安装", false)]));
         Check(languages.Items.Count == 2 && ((ToggleMenuFlyoutItem)languages.Items[0]).IsChecked, "Language menu filters installed languages and marks current");
@@ -104,10 +105,11 @@ public sealed partial class MainWindow
         Check(GetHistorySessions().Count > 0, "Live captures feed transcript");
         Check(await PersistAsync(), "Session writes to disk");
         Check(_store.Load().Sessions.Count == 1, "Saved session reloads");
-        ShowHistoryPath(); await Task.Delay(150);
-        var pathWindow = _historyPathWindow!;
-        Check(pathWindow.Title == "历史保存路径" && pathWindow.PathText.IsReadOnly && pathWindow.PathText.Text == _store.ArchiveRoot,
-            "History path window displays the actual archive directory");
+        ShowPreferences(); await Task.Delay(150);
+        var pathWindow = _preferencesWindow!;
+        Check(pathWindow.Title == "首选项" && pathWindow.PathText.IsReadOnly && pathWindow.PathText.Text == _store.ArchiveRoot &&
+            pathWindow.AutoSaveInput.IsOn && pathWindow.StartupInput.IsEnabled && !pathWindow.StartupInput.IsOn,
+            "Preferences groups automatic history saving, history path and startup with compatible defaults");
         Check(pathWindow.ChooseButton.IsEnabled && pathWindow.OpenButton.IsEnabled && pathWindow.DefaultButton.IsEnabled,
             "History path window offers choose, open and reset actions");
         var textBeforePathChange = HistoryDocument.PlainText(GetHistorySessions());
@@ -123,7 +125,30 @@ public sealed partial class MainWindow
         await pathWindow.ApplyPathAsync(_historyPathStore.DefaultPath);
         Check(_store.ArchiveRoot == _historyPathStore.DefaultPath && _historyPathStore.Load() == _historyPathStore.DefaultPath,
             "Restore default updates the history preference");
-        await SnapshotAsync((FrameworkElement)pathWindow.Content, Path.Combine(reportRoot, "winui-history-path.png"));
+        Check(pathWindow.ApplyStartup(true) == null && pathWindow.StartupInput.IsOn && _startup.IsEnabled,
+            "Preferences startup switch enables registration");
+        pathWindow.Close(); ShowPreferences(); pathWindow = _preferencesWindow!;
+        await Task.Delay(100);
+        Check(pathWindow.StartupInput.IsOn, "Preferences reloads startup registration when reopened");
+        Check(pathWindow.ApplyStartup(false) == null && !pathWindow.StartupInput.IsOn && !_startup.IsEnabled,
+            "Preferences startup switch removes registration");
+        var deniedStartup = new StartupRegistration(() => null, _ => throw new UnauthorizedAccessException("test denied"), Environment.ProcessPath!);
+        var deniedPreferences = new PreferencesWindow(_store.ArchiveRoot, _historyPathStore.DefaultPath, ChangeHistoryPathAsync,
+            true, ChangeAutoSaveHistoryAsync, deniedStartup);
+        deniedPreferences.Activate();
+        Check(deniedPreferences.ApplyStartup(true)?.Contains("test denied", StringComparison.Ordinal) == true &&
+            !deniedPreferences.StartupInput.IsOn && deniedPreferences.Notice is { IsOpen: true, Severity: InfoBarSeverity.Error },
+            "Preferences restores startup state and visibly reports write failures");
+        deniedPreferences.Close();
+        var unreadablePreferences = new PreferencesWindow(_store.ArchiveRoot, _historyPathStore.DefaultPath, ChangeHistoryPathAsync,
+            true, ChangeAutoSaveHistoryAsync, new(() => throw new UnauthorizedAccessException("test read denied"), _ => { }, Environment.ProcessPath!));
+        unreadablePreferences.Activate();
+        Check(!unreadablePreferences.StartupInput.IsEnabled && unreadablePreferences.AutoSaveInput.IsEnabled &&
+            unreadablePreferences.Notice.Message.Contains("test read denied", StringComparison.Ordinal),
+            "Startup read failure leaves the other preferences available and reports why");
+        unreadablePreferences.Close(); pathWindow.Activate();
+        await Task.Delay(100);
+        await SnapshotAsync((FrameworkElement)pathWindow.Content, Path.Combine(reportRoot, "winui-preferences.png"));
         pathWindow.Close();
 
         ShowHistory(); await Task.Delay(150);
@@ -150,6 +175,8 @@ public sealed partial class MainWindow
         Check(style.Title == "字幕样式" && style.Sections.Items.Select(x => x.Text).SequenceEqual(new[] { "文字", "背景" }),
             "Style title bar identifies the text/background settings window");
         Check((string)style.OpacityInput.Header == "背景不透明度", "Background slider label describes opacity");
+        Check((string)style.BorderOpacityInput.Header == "边框不透明度" && style.BorderOpacityInput.Value == 100,
+            "Border opacity slider defaults to the existing opaque border");
         Check(style.AppWindow.Presenter is OverlappedPresenter { IsResizable: false, IsMaximizable: false },
             "Style window has fixed dimensions");
         var textOptions = (StackPanel)style.TextPage.Content;
@@ -179,8 +206,29 @@ public sealed partial class MainWindow
         style.OpacityInput.Value = 0;
         Check(_surface.Background is SolidColorBrush { Color.A: 0 }, "Zero opacity produces fully transparent background");
         style.OpacityInput.Value = 25;
+        style.BorderOpacityInput.Value = 50;
+        Check(_surface.BorderBrush is SolidColorBrush { Color.A: 128 } && _surface.Background is SolidColorBrush { Color.A: 64 } &&
+            _caption.Text.Opacity == 1 && _settings.Opacity == 1,
+            "Border opacity changes independently of the background, text and controls");
+        style.BorderOpacityInput.Value = 0;
+        Check(_surface.BorderBrush is SolidColorBrush { Color.A: 0 } && _surface.BorderThickness.Left == 1,
+            "Zero border opacity hides the border without changing the window layout");
+        style.BorderOpacityInput.Value = 40;
+        style.ShadowInput.IsOn = false;
+        Check(!_appearance.WindowShadowEnabled && _surface.BorderBrush is SolidColorBrush { Color.A: 102 } &&
+            _surface.Background is SolidColorBrush { Color.A: 64 }, "Shadow switch applies without changing border or background opacity");
         SaveAppearance();
         Check(_appearanceStore.Load() == _appearance, "Appearance settings roundtrip");
+        style.Close(); ShowStyle(); style = _styleWindow!;
+        await Task.Delay(100);
+        Check(style.BorderOpacityInput.Value == 40 && Math.Abs(_appearanceStore.Load().BorderOpacity - .4) < .001,
+            "Reopening style settings restores the saved border opacity");
+        Check(!style.ShadowInput.IsOn && !_appearanceStore.Load().WindowShadowEnabled,
+            "Shadow switch restores its saved state when reopening settings");
+        style.ShadowInput.IsOn = true;
+        Check(_appearance.WindowShadowEnabled, "Shadow switch can re-enable the window shadow");
+        Check(JsonSerializer.Deserialize<CaptionAppearance>("{\"BackgroundOpacity\":0.25}")!.Normalize().BorderOpacity == 1,
+            "Existing style files without border opacity retain the original opaque border");
         style.Sections.SelectedItem = style.Sections.Items[0];
         await Task.Delay(60);
         Check(style.TextPage.Visibility == Visibility.Visible && style.BackgroundPage.Visibility == Visibility.Collapsed &&
@@ -219,8 +267,13 @@ public sealed partial class MainWindow
         await SnapshotAsync((FrameworkElement)style.Content, Path.Combine(Path.GetDirectoryName(reportPath)!, "winui-style.png"));
         Check(true, "Three WinUI windows rendered to PNG");
 
+        var previousSession = new SessionRecord(Guid.NewGuid(), DateTimeOffset.Now.AddDays(-1),
+            [new(Guid.NewGuid(), DateTimeOffset.Now.AddDays(-1), "上次尚未归档的字幕")]);
+        _store.Save(previousSession);
         Check(await history.ClearConfirmedAsync() == null, "Clear waits for persistence and succeeds");
-        Check(_store.Load().Sessions.Count == 0 && history.AllText().Length == 0, "Clear removes saved and current history");
+        Check(_store.Load().Sessions.Single().Record.Id == previousSession.Id && history.AllText().Length == 0,
+            "Clear removes only the current history and retains an older unarchived run");
+        _store.Clear(previousSession);
         Check(!history.CopyButton.IsEnabled && !history.ExportButton.IsEnabled && !history.ClearButton.IsEnabled, "Empty history actions disabled");
         Check(_caption.Value.Length > 0, "Clear leaves live display intact");
         ProcessCapture(new("connected", "第一句字幕。第二句字幕。新增内容", "test"));
@@ -241,9 +294,19 @@ public sealed partial class MainWindow
         UpdateAppearance(new()); SaveAppearance();
         var finalText = HistoryDocument.PlainText(GetHistorySessions());
         var finalMarkdown = HistoryDocument.Markdown(GetHistorySessions());
-        Check(await ArchiveHistoryAsync(), "Exit archives the final unsaved caption revision");
+        var unreadableCheckpoint = Path.Combine(_store.Root, "unreadable-test.json");
+        File.WriteAllText(unreadableCheckpoint, "invalid JSON retained for recovery");
+        Check(await FinalizeHistoryAsync(), "Exit archives the final unsaved caption revision");
         Check(_store.Load().Sessions.Count == 0 && HistoryDocument.PlainText(GetHistorySessions()).Length == 0,
             "Exit clears checkpoints and in-memory history after archiving");
+        Check(File.ReadAllText(unreadableCheckpoint) == "invalid JSON retained for recovery" && _store.Load().Unreadable == 1,
+            "Unreadable checkpoint is preserved without blocking readable archives");
+        ShowHistory();
+        var recoveryWindow = _historyWindow!;
+        Check(_historyWarning.Contains(_store.Root, StringComparison.Ordinal) &&
+            ((Grid)recoveryWindow.Content).Children.OfType<InfoBar>().Any(x => x.IsOpen && x.Severity == InfoBarSeverity.Warning),
+            "History window visibly reports the recovery directory");
+        recoveryWindow.Close();
         var archive = Directory.GetFiles(_store.ArchiveRoot, "*.md").Single();
         Check(File.ReadAllText(archive) == finalMarkdown && finalText.Contains("重新连接", StringComparison.Ordinal),
             "Archive includes the final caption received after the last periodic save");
@@ -254,8 +317,67 @@ public sealed partial class MainWindow
         ProcessCapture(new("connected", "重新连接。下一次记录", "new-source"));
         Check(HistoryDocument.PlainText(GetHistorySessions()).Contains("下一次记录", StringComparison.Ordinal),
             "New history records after the previous session was archived");
-        File.WriteAllText(reportPath, JsonSerializer.Serialize(new { Framework = "WinUI 3", HistoryRoot = _store.Root, Passed = checks.Count, Checks = checks },
+        await VerifyAutoSaveHistoryAsync(Check, reportRoot);
+        var archiveCount = Directory.GetFiles(_store.ArchiveRoot, "*.md").Length;
+        File.WriteAllText(reportPath, JsonSerializer.Serialize(new { Framework = "WinUI 3", HistoryRoot = _store.Root,
+            UnreadableCheckpoint = unreadableCheckpoint, AutoSaveHistory = _autoSaveHistory, ArchiveCount = archiveCount,
+            Passed = checks.Count, Checks = checks },
             new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private async Task VerifyAutoSaveHistoryAsync(Action<bool, string> check, string reportRoot)
+    {
+        ShowPreferences(); await Task.Delay(100);
+        var preferences = _preferencesWindow!;
+        var text = HistoryDocument.PlainText(GetHistorySessions());
+        var pendingSave = PersistAsync();
+        await preferences.ApplyAutoSaveAsync(false);
+        await pendingSave;
+        check(!_autoSaveHistory && !preferences.AutoSaveInput.IsOn && !_preferencesStore.Load().AutoSaveHistory &&
+            _store.Load().Sessions.Count == 0 && HistoryDocument.PlainText(GetHistorySessions()) == text,
+            "Disabling autosave waits for an in-flight save, removes its checkpoint and retains the live history");
+        ProcessCapture(new("connected", "重新连接。下一次记录。关闭保存后仍有字幕", "new-source"));
+        check(await PersistAsync() && _store.Load().Sessions.Count == 0,
+            "Periodic history saving writes no checkpoint while autosave is disabled");
+        ShowHistory(); await Task.Delay(100);
+        check(_historyWindow!.CopyButton.IsEnabled && _historyWindow.ExportButton.IsEnabled &&
+            _historyWindow.AllMarkdown().Contains("关闭保存后仍有字幕", StringComparison.Ordinal),
+            "History remains available for manual copying and export while autosave is disabled");
+        _historyWindow.Close();
+        var old = new SessionRecord(Guid.NewGuid(), DateTimeOffset.Now.AddDays(-2),
+            [new(Guid.NewGuid(), DateTimeOffset.Now.AddDays(-2), "旧会话恢复记录")]);
+        _store.Save(old);
+        var archives = Directory.GetFiles(_store.ArchiveRoot, "*.md").Length;
+        ArchivePreviousHistory();
+        check(_store.Load().Sessions.Single().Record.Id == old.Id, "Disabled autosave leaves older recovery checkpoints unarchived at startup");
+        check(await FinalizeHistoryAsync() && Directory.GetFiles(_store.ArchiveRoot, "*.md").Length == archives &&
+            _store.Load().Sessions.Single().Record.Id == old.Id,
+            "Exit with autosave disabled creates no archive and preserves older recovery checkpoints");
+        _store.Clear(old);
+        await preferences.ApplyAutoSaveAsync(true);
+        ProcessCapture(new("connected", "重新开启保存后的字幕", "new-source"));
+        check(_autoSaveHistory && _preferencesStore.Load().AutoSaveHistory && await PersistAsync() && _store.Load().Sessions.Count == 1,
+            "Re-enabling autosave resumes checkpoint saving for the current history");
+        var preferencePath = Path.Combine(_store.Root, "preferences", "preferences.json");
+        using (new FileStream(preferencePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await preferences.ApplyAutoSaveAsync(false);
+            check(_autoSaveHistory && preferences.AutoSaveInput.IsOn && _preferencesStore.Load().AutoSaveHistory &&
+                preferences.Notice is { IsOpen: true, Severity: InfoBarSeverity.Error },
+                "Failed preference writes retain the enabled state and visibly report the error");
+        }
+        check(await PersistAsync() && _store.Load().Sessions.Count == 1,
+            "A failed autosave setting update does not suppress future checkpoint writes");
+        await preferences.ApplyAutoSaveAsync(false);
+        preferences.Close(); ShowPreferences(); preferences = _preferencesWindow!;
+        await Task.Delay(100);
+        check(!preferences.AutoSaveInput.IsOn && _store.Load().Sessions.Count == 0,
+            "Preferences restores disabled autosave when reopened and no current checkpoint remains");
+        await SnapshotAsync((FrameworkElement)preferences.Content, Path.Combine(reportRoot, "winui-preferences-no-autosave.png"));
+        preferences.Close();
+        ProcessCapture(new("connected", "关闭应用时不应自动归档的最终字幕", "new-source"));
+        check(HistoryDocument.PlainText(GetHistorySessions()).Length > 0,
+            "Final live text remains in memory for the process-exit test with autosave disabled");
     }
 
     private async Task VerifySingleInstanceAsync(string reportPath, Action<bool, string> check)

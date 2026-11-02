@@ -23,17 +23,17 @@ internal sealed class HistoryStore
     {
         if (session.Entries.Count == 0) return;
         Directory.CreateDirectory(Root);
-        var path = Path.Combine(Root, $"{session.StartedAt:yyyyMMdd-HHmmss}-{session.Id:N}.json");
+        var path = CheckpointPath(session);
         var temporary = path + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(session), new UTF8Encoding(false));
         File.Move(temporary, path, overwrite: true);
     }
 
-    public void ArchivePending()
+    // Unreadable checkpoints stay in place for recovery. They must not prevent
+    // readable sessions from being archived or keep the application open forever.
+    public int ArchivePending()
     {
         var loaded = Load();
-        if (loaded.Unreadable > 0)
-            throw new IOException($"{loaded.Unreadable} 个历史文件无法读取，原文件已保留。");
         foreach (var saved in loaded.Sessions)
         {
             Directory.CreateDirectory(ArchiveRoot);
@@ -43,6 +43,7 @@ internal sealed class HistoryStore
             WriteAtomic(archive, HistoryDocument.Markdown([saved.Record]));
             File.Delete(saved.Path);
         }
+        return loaded.Unreadable;
     }
 
     private static void WriteAtomic(string path, string content)
@@ -71,12 +72,16 @@ internal sealed class HistoryStore
         return (sessions, unreadable);
     }
 
-    public void Clear()
+    private string CheckpointPath(SessionRecord session) =>
+        Path.Combine(Root, $"{session.StartedAt:yyyyMMdd-HHmmss}-{session.Id:N}.json");
+
+    public void Clear(SessionRecord session)
     {
         if (!Directory.Exists(Root)) return;
-        // Only history files in this directory; never recurse into settings or other folders.
-        foreach (var path in Directory.EnumerateFiles(Root))
-            if (path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
-                path.EndsWith(".json.tmp", StringComparison.OrdinalIgnoreCase)) File.Delete(path);
+        // A failed startup archive can leave checkpoints belonging to older runs.
+        // Clear only this session, including an interrupted write of its checkpoint.
+        var path = CheckpointPath(session);
+        File.Delete(path);
+        File.Delete(path + ".tmp");
     }
 }

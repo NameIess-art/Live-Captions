@@ -11,6 +11,7 @@ internal static class HistoryStoreRegression
         try
         {
             var store = new HistoryStore(root);
+            store.Clear(new SessionRecord(Guid.NewGuid(), DateTimeOffset.Now, []));
             store.ArchivePending();
             Require(!Directory.Exists(root), "Empty startup created an archive");
             var transcript = new Transcript();
@@ -45,15 +46,46 @@ internal static class HistoryStoreRegression
             File.WriteAllText(legacyJson, "Previous version's backup");
             transcript.Clear();
             transcript.Accept("下一次字幕", DateTimeOffset.Now);
-            store.Save(transcript.Snapshot());
-            store.Clear();
+            var current = transcript.Snapshot();
+            store.Save(current);
+            // Startup could not archive an older run. Clearing the current run
+            // must leave that run and any unrelated/corrupt files recoverable.
+            var previous = session with { Id = Guid.NewGuid() };
+            store.Save(previous);
+            var previousCheckpoint = store.Load().Sessions.Single(x => x.Record.Id == previous.Id).Path;
+            File.WriteAllText(previousCheckpoint + ".tmp", "older interrupted save");
+            var currentCheckpoint = store.Load().Sessions.Single(x => x.Record.Id == current.Id).Path;
+            File.WriteAllText(currentCheckpoint + ".tmp", "current interrupted save");
+            var brokenPath = Path.Combine(root, "broken.json");
+            File.WriteAllText(brokenPath, "invalid JSON");
+            store.Clear(current);
             Require(File.Exists(legacyJson) && File.Exists(markdown), "Manual clear deleted completed archives");
-            store.Save(transcript.Snapshot());
-            File.WriteAllText(Path.Combine(root, "broken.json"), "invalid JSON");
-            try { store.ArchivePending(); throw new InvalidOperationException("Unreadable history was ignored"); }
-            catch (IOException) { }
-            Require(File.Exists(Path.Combine(root, "broken.json")) && store.Load().Sessions.Count == 1,
-                "Unreadable history caused data loss");
+            Require(!File.Exists(currentCheckpoint) && !File.Exists(currentCheckpoint + ".tmp"), "Clear retained the current checkpoint");
+            Require(File.Exists(previousCheckpoint) && File.Exists(previousCheckpoint + ".tmp") && File.ReadAllText(brokenPath) == "invalid JSON",
+                "Clear deleted another run or a recovery file");
+            // Clearing a session which has not been saved is also safe and repeatable.
+            store.Clear(current);
+            store.Clear(current with { Id = Guid.NewGuid() });
+            store.Save(current);
+            Require(store.ArchivePending() == 1, "Unreadable history was not reported");
+            Require(File.ReadAllText(brokenPath) == "invalid JSON" && store.Load().Sessions.Count == 0,
+                "Unreadable history blocked valid archives or was deleted");
+            Require(File.Exists(Path.Combine(store.ArchiveRoot, Path.GetFileNameWithoutExtension(currentCheckpoint) + ".md")) &&
+                File.Exists(Path.Combine(store.ArchiveRoot, Path.GetFileNameWithoutExtension(previousCheckpoint) + ".md")),
+                "Readable sessions were not archived");
+            Require(store.ArchivePending() == 1, "A retry should preserve and report the unreadable file without throwing");
+            File.Delete(brokenPath);
+            Require(store.ArchivePending() == 0, "Resolved recovery warning did not clear");
+            // A temporarily locked file must likewise survive without blocking
+            // the other sessions, then be archived after the lock is released.
+            store.Save(current);
+            store.Save(previous);
+            using (new FileStream(previousCheckpoint, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                Require(store.ArchivePending() == 1 && !File.Exists(currentCheckpoint), "Locked checkpoint blocked a readable session");
+                Require(File.Exists(previousCheckpoint), "Locked checkpoint was lost");
+            }
+            Require(store.ArchivePending() == 0 && store.Load().Sessions.Count == 0, "Unlocked checkpoint could not be archived");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
